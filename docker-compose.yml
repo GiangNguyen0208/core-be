@@ -1,0 +1,116 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+# runtime.env.example là file base bắt buộc (required: true) — chính là nội
+# dung .env bạn vừa gửi. runtime.env (tuỳ chọn, required: false) dùng để mỗi
+# máy override riêng (secrets thật, domain thật...) mà không sửa file example.
+x-backend-env-files: &backend-env-files
+  - path: ./runtime.env.example
+    required: true
+  - path: ./runtime.env
+    required: false
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: social_db
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: social_auto
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d social_auto"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  backend:
+    build: .
+    container_name: be-core
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file: *backend-env-files
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    logging: *default-logging
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./videos_storage:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+    # Chỉ 2 biến này khác giữa backend/worker — environment: ở service luôn
+    # override env_file nên ghi đè đúng giá trị cho từng vai trò.
+    environment:
+      SCHEDULER_ENABLED: "false"
+      APP_ROLE: api
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    build: .
+    container_name: social_worker
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    env_file: *backend-env-files
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    logging: *default-logging
+    command: ["sh", "-c", "alembic upgrade head && python -m app.worker.run"]
+    volumes:
+      - .:/app
+      - ./videos_storage:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SCHEDULER_ENABLED: "true"
+      APP_ROLE: worker
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker.healthcheck"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: social_tunnel
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    logging: *default-logging
+    network_mode: "service:backend"
+    env_file: *backend-env-files
+    command: tunnel --no-autoupdate run
+    depends_on:
+      backend:
+        condition: service_healthy

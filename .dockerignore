@@ -1,0 +1,23 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+database/
+videos_storage/
+downloads/
+.git
+.gitignore
+.github/
+.pytest_cache/
+tests/
+*.db
+*.sqlite3
+
+# Biến môi trường cục bộ (local dev) — không đưa vào image
+.env
+.env.*
+!.env.example
